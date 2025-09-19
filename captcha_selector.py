@@ -1,20 +1,16 @@
 from numpy import random
-
-# onmousemove = function(e)
-# {console.log("mouse location:", e.clientX, e.clientY)}
-
+from settings_loader import get_settings
 
 class ROCCaptchaSelector():
-    __btn_dimensions = (40, 30)
-    __keypadTopLeft = {'roc_recruit': [890, 705],
-                       'roc_armory': [973, 1011],
-                       'roc_attack': [585, 680],
-                       'roc_spy': [585, 695],
-                       'roc_training': [973, 453]}
-    __keypadGap = [52, 42]
-
-    def __init__(self, resolution=None) -> None:
+    def __init__(self, resolution=None, settings_file="settings.json") -> None:
         self.resolution = resolution
+        self.settings = get_settings(settings_file)
+        
+        # Load configuration from settings
+        captcha_config = self.settings.get_captcha_selector_config()
+        self.__btn_dimensions = tuple(captcha_config['button_dimensions'])
+        self.__keypadTopLeft = captcha_config['keypad_positions']
+        self.__keypadGap = captcha_config['keypad_gap']
 
     def get_xy(self, number):
         pass

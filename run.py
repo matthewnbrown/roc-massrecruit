@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Automated script for managing multiple accounts on ruinsofchaos.com
+Automated script for managing multiple accounts on roc
 Converts from Selenium to requests-based approach with SQLite cookie management
 """
 
@@ -21,17 +21,37 @@ import queue
 
 from captcha_selector import ROCCaptchaSelector
 from predict import CaptchaPredictor
+from settings_loader import get_settings
 
 class AccountManager:
-    def __init__(self, db_path="accounts.db", max_workers=3):
-        self.db_path = db_path
-        self.base_url = "https://ruinsofchaos.com"
-        self.recruit_url = urljoin(self.base_url, "recruiter.php")
-        self.login_url = urljoin(self.base_url, "login.php")
-        self.predictor = CaptchaPredictor('models/2025_09_12best_model.pth')
+    def __init__(self, settings_file="settings.json"):
+        # Load settings
+        self.settings = get_settings(settings_file)
+        
+        # Initialize from settings
+        self.db_path = self.settings.get_database_path()
+        self.base_url = self.settings.get_base_url()
+        self.recruit_url = self.settings.get_recruit_url()
+        self.login_url = self.settings.get_login_url()
+        self.predictor = CaptchaPredictor(self.settings.get_model_path(), self.settings.get_model_device())
         self.captcha_selector = ROCCaptchaSelector()
-        self.max_workers = max_workers
+        self.max_workers = self.settings.get_max_workers()
         self.db_lock = threading.Lock()  # Thread-safe database operations
+        
+        # Load CAPTCHA settings
+        self.captcha_messages = self.settings.get_captcha_messages()
+        self.use_captcha = self.settings.get_use_captcha()
+        self.confidence_threshold = self.settings.get_confidence_threshold()
+        self.max_attempts = self.settings.get_max_attempts()
+        self.captcha_api_url = self.settings.get_captcha_api_url()
+        
+        # Load directory settings
+        self.directories = self.settings.get_directories()
+        
+        # Load timeout settings
+        self.in_progress_timeout_minutes = self.settings.get_in_progress_timeout_minutes()
+        self.worker_join_timeout = self.settings.get_worker_join_timeout()
+        
         self.init_database()
     
     def init_database(self):
@@ -160,8 +180,11 @@ class AccountManager:
             conn.commit()
             conn.close()
     
-    def clear_expired_in_progress(self, timeout_minutes=10):
+    def clear_expired_in_progress(self, timeout_minutes=None):
         """Clear in-progress status for users that have been stuck for too long (thread-safe)"""
+        if timeout_minutes is None:
+            timeout_minutes = self.in_progress_timeout_minutes
+            
         with self.db_lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -352,7 +375,7 @@ class AccountManager:
             cursor = conn.cursor()
             
             current_timestamp = int(time.time())
-            timeout_seconds = 10 * 60  # 10 minute timeout
+            timeout_seconds = self.in_progress_timeout_minutes * 60
             
             # First, clear expired in-progress statuses
             cursor.execute('''
@@ -496,90 +519,118 @@ class AccountManager:
             print(f"Error during login for {email}: {e}")
             return False
     
-    def solve_captcha(self, session, username):
+    def recruit(self, session, username):
         """Solve CAPTCHA using the existing predictor"""
-        for attempt in range(5):
+        for attempt in range(self.max_attempts):
             # Get the recruit page
-            response = session.get(self.recruit_url)
-            response.raise_for_status()
+            use_captcha = self.use_captcha
+            
+            unsolved_captcha_str = self.captcha_messages['unsolved']
+            solved_captcha_str = self.captcha_messages['solved']         
 
-            # Skip if captcha is not needed:
-            if "Complete the CAPTCHA to restore your CPM to its maximum value!" not in response.text:
-                # Extract and save the next recruit timestamp from the page
-                next_timestamp = self.extract_next_recruit_timestamp(response.text)
-                if next_timestamp:
-                    self.save_recruit_solve_timestamp(username, next_timestamp)
-                    clocktime = datetime.fromtimestamp(next_timestamp).strftime('%H:%M:%S')
-                    print(f"✅ {username} | No CAPTCHA needed. Skipping. Next recruit available at timestamp: {clocktime}")
-                return True
-            
-            # print(f"\n🔁 Attempt {attempt + 1} to solve CAPTCHA for {username}")
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            captcha_img = soup.find('img', {'id': 'captcha_image'})
-            
-            if not captcha_img:
-                os.makedirs('./errs', exist_ok=True)
-                with open(f'./errs/no_captcha_{username}.html', 'w', encoding='utf-16') as file:
-                    file.write(response.text)
-                print("⚠️ No CAPTCHA found. Skipping.")
-                continue
-            
-            captcha_url = captcha_img.get('src')
-            if not captcha_url:
-                print("⚠️ No CAPTCHA URL found.")
-                continue
-            
-            captcha_url = urljoin(self.base_url, captcha_url)
-            # Extract hash from URL
-            hash_value = captcha_url.split('hash=')[1] if 'hash=' in captcha_url else 'unknown'
-            # Download CAPTCHA image
-            captcha_response = session.get(captcha_url)
-            captcha_name = f'captcha_{hash_value}.png'
-            if captcha_response.status_code == 200:
-                img = PIL.Image.open(io.BytesIO(captcha_response.content))
-                path = captcha_name
-                img.save(path)
-            else:
-                print("Error downloading CAPTCHA, non 200 code")
-                continue
-            
-            # Predict CAPTCHA
-            num, confidence = self.predictor.predict_single(captcha_name)
-            #print(f"Predicted num {num} with confidence {confidence}")
-            
-            
-            
-            if confidence < 0.8:
-                print(f"⚠️ {username} | confidence too low ({num}|{confidence}). Skipping guess.")
-                os.makedirs('./low_confidence', exist_ok=True)
-                shutil.move(captcha_name, f'./low_confidence/{num}_{hash_value}.png')
+            if use_captcha:
+                response = session.get(self.recruit_url)
+                response.raise_for_status()
+
+                # Skip if captcha is not needed:
+                if unsolved_captcha_str not in response.text:
+                    # Extract and save the next recruit timestamp from the page
+                    next_timestamp = self.extract_next_recruit_timestamp(response.text)
+                    if next_timestamp:
+                        self.save_recruit_solve_timestamp(username, next_timestamp)
+                        clocktime = datetime.fromtimestamp(next_timestamp).strftime('%H:%M:%S')
+                        print(f"✅ {username} | No CAPTCHA needed. Skipping. Next recruit available at timestamp: {clocktime}")
+                    return True
                 
-                continue
+                # print(f"\n🔁 Attempt {attempt + 1} to solve CAPTCHA for {username}")
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                captcha_img = soup.find('img', {'id': 'captcha_image'})
+                
+                if not captcha_img:
+                    os.makedirs(self.directories['error'], exist_ok=True)
+                    with open(f"{self.directories['error']}/no_captcha_{username}.html", 'w', encoding='utf-16') as file:
+                        file.write(response.text)
+                    print("⚠️ No CAPTCHA found. Skipping.")
+                    continue
+                
+                captcha_url = captcha_img.get('src')
+                if not captcha_url:
+                    print("⚠️ No CAPTCHA URL found.")
+                    continue
+                
+                captcha_url = urljoin(self.base_url, captcha_url)
+                # Extract hash from URL
+                hash_value = captcha_url.split('hash=')[1] if 'hash=' in captcha_url else 'unknown'
+                # Download CAPTCHA image
+                captcha_response = session.get(captcha_url)
+                captcha_name = f'captcha_{hash_value}.png'
+                
             
-            # Submit CAPTCHA solution
-            try:
+                if captcha_response.status_code == 200:
+                    img = PIL.Image.open(io.BytesIO(captcha_response.content))
+                    path = captcha_name
+                    img.save(path)
+                else:
+                    print("Error downloading CAPTCHA, non 200 code")
+                    continue
+                # Use API to solve CAPTCHA
+                try:
+                    with open(captcha_name, 'rb') as img_file:
+                        files = {
+                            'image': ('captcha.png', img_file, 'image/png')
+                        }
+                        data = {
+                            'captcha_hash': hash_value
+                        }
+                    
+                        # Make API request to solve captcha
+                        api_response = requests.post(self.captcha_api_url, files=files, data=data)
+                        
+                        if api_response.status_code != 200:
+                            print(f"❌ API request failed: {api_response.text}")
+                            continue
+                        
+                        resp_json = api_response.json()
+                        num = resp_json['predicted_answer']
+                        confidence = resp_json['confidence']
+                        
+                        
+                        
+                except Exception as e:
+                    print(f"❌ API error: {e}")
+                    continue
+                
+                if confidence < self.confidence_threshold:
+                    print(f"⚠️ {username} | confidence too low ({num}|{confidence}). Skipping guess.")
+                    os.makedirs(self.directories['low_confidence'], exist_ok=True)
+                    shutil.move(captcha_name, f"{self.directories['low_confidence']}/{num}_{hash_value}.png")
+                    
+                    continue
+                
                 x,y = self.captcha_selector.get_xy_static(num, 'roc_recruit')
                 
-                payload = {
+                captcha_payload = {
                     "num": num,
                     "captcha": hash_value,
                     "coordinates[x]": x,
                     "coordinates[y]": y
                 }
+            else:
+                captcha_payload = { "submit": "Recruit" }
 
-                # Click the button (make request to the URL)
-                button_response = session.post(self.recruit_url, payload)
+            # Submit CAPTCHA solution
+            try:
+                button_response = session.post(self.recruit_url, captcha_payload)
                 button_response.raise_for_status()
 
-
                 # Check if CAPTCHA was solved
-                if "Complete the CAPTCHA to restore your CPM to its maximum value!" in button_response.text:
+                if use_captcha and unsolved_captcha_str in button_response.text:
                     print(f"❌ {username} | CAPTCHA failed ({captcha_name}). Retrying...")
-                    os.makedirs('./failed_captchas', exist_ok=True)
-                    shutil.move(captcha_name, f'./failed_captchas/{num}_{hash_value}.png')
+                    os.makedirs(self.directories['failed_captchas'], exist_ok=True)
+                    shutil.move(captcha_name, f"{self.directories['failed_captchas']}/{num}_{hash_value}.png")
                     continue
-                else:
+                elif self.captcha_messages['success'] in button_response.text:
                     # Save updated cookies
                     self.save_cookies(username, session)
                     # Extract and save the next recruit timestamp from the response
@@ -588,10 +639,13 @@ class AccountManager:
                         self.save_recruit_solve_timestamp(username, next_timestamp)
                         clocktime = datetime.fromtimestamp(next_timestamp).strftime('%H:%M:%S')
                         print(f"✅ {username} | Next recruit available at timestamp: {clocktime}")
-                    os.makedirs('./correct_captchas', exist_ok=True)
-                    shutil.move(captcha_name, f'./correct_captchas/{num}_{hash_value}.png')
+                        
+                    if use_captcha:
+                        os.makedirs(self.directories['correct_captchas'], exist_ok=True)
+                        shutil.move(captcha_name, f"{self.directories['correct_captchas']}/{num}_{hash_value}.png")
                     return True
-                    
+                elif solved_captcha_str not in button_response.text:
+                    print(f"❌ {username} | Recruit failed ({captcha_name}). Retrying...")
             except Exception as e:
                 print(f"❌ Button click error: {e}")
                 continue
@@ -603,21 +657,7 @@ class AccountManager:
         """Process a single account"""        
         # Create a new session for this account
         session = requests.Session()
-        session.headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml"
-                + ";q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Connection": "keep-alive",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-User": "?1",
-                "TE": "trailers",
-                "Upgrade-Insecure-Requests": "1",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "AppleWebKit/537.36 (KHTML, like Gecko) "
-                + "Chrome/114.0.0.0 Safari/537.36",
-            })
+        session.headers.update(self.settings.get_headers())
         
         # Try to load existing cookies
         cookies_loaded = self.load_cookies(username, session)
@@ -633,7 +673,7 @@ class AccountManager:
             #print(f"✅ User {username} is already logged in")
         
         # Try to solve CAPTCHA (user eligibility already checked in get_eligible_users)
-        success = self.solve_captcha(session, username)
+        success = self.recruit(session, username)
         if not success:
             print(f"❌ CAPTCHA process failed for {username}")
         
@@ -656,10 +696,10 @@ class AccountManager:
 
 def main():
     """Main function - continuously processes eligible users from database"""
-    manager = AccountManager(max_workers=8)
+    manager = AccountManager()
     
     # Check if CSV file exists and sync to database
-    csv_file = "accounts.csv"
+    csv_file = manager.settings.get_csv_file()
     if os.path.exists(csv_file):
         print(f"📁 Found CSV file: {csv_file}")
         print("🔄 Syncing CSV data to database...")
@@ -699,8 +739,8 @@ def main():
                     print("❌ All workers have died. Exiting.")
                     break
                 
-                # Show status every 30 seconds
-                time.sleep(30)
+                # Show status every configured interval
+                time.sleep(manager.settings.get_status_check_interval())
                 next_available_time = manager.get_next_available_time()
                 if next_available_time:
                     current_time = int(time.time())
@@ -731,7 +771,7 @@ def main():
             
             # Wait for workers to finish (with timeout)
             for worker in workers:
-                worker.join(timeout=10)
+                worker.join(timeout=manager.worker_join_timeout)
             
             print("✅ All workers stopped")
             

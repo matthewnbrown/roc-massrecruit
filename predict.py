@@ -16,7 +16,12 @@ class CaptchaPredictor:
             model_path: Path to the saved model
             device: Device to run inference on
         """
-        self.device = device if torch.cuda.is_available() else 'cpu'
+        # Use the specified device if CUDA is available, otherwise fall back to CPU
+        if device == 'cuda' and not torch.cuda.is_available():
+            print("⚠️ CUDA not available, falling back to CPU")
+            self.device = 'cpu'
+        else:
+            self.device = device
         
         # Load model
         self.model, self.class_names = self._load_model(model_path)

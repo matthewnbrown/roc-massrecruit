@@ -1,0 +1,64 @@
+{
+  "database": {
+    "path": "accounts.db"
+  },
+  "server": {
+    "base_url": "https://<YOUR_ROC>.com",
+    "recruit_endpoint": "recruiter.php",
+    "login_endpoint": "login.php"
+  },
+  "model": {
+    "path": "models/2025_09_12best_model.pth",
+    "device": "cuda"
+  },
+  "captcha": {
+    "use_captcha": false,
+    "api_url": "http://localhost:5000/solve",
+    "confidence_threshold": 0.8,
+    "max_attempts": 2,
+    "unsolved_message": "Complete the CAPTCHA to restore your CPM to its maximum value!",
+    "solved_message": "Your CPM has been restored to its maximum value!",
+    "success_message": "The longer you wait, the fewer you earn per minute"
+  },
+  "captcha_selector": {
+    "button_dimensions": [40, 30],
+    "keypad_gap": [52, 42],
+    "keypad_positions": {
+      "roc_recruit": [890, 705],
+      "roc_armory": [973, 1011],
+      "roc_attack": [585, 680],
+      "roc_spy": [585, 695],
+      "roc_training": [973, 453]
+    }
+  },
+  "threading": {
+    "max_workers": 8,
+    "worker_timeout_seconds": 10,
+    "status_check_interval_seconds": 30
+  },
+  "timeouts": {
+    "in_progress_timeout_minutes": 10,
+    "worker_join_timeout_seconds": 10
+  },
+  "files": {
+    "csv_file": "accounts.csv",
+    "error_directory": "./errs",
+    "failed_captchas_directory": "./failed_captchas",
+    "low_confidence_directory": "./low_confidence",
+    "correct_captchas_directory": "./correct_captchas"
+  },
+  "user_agent": {
+    "string": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+  },
+  "headers": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "TE": "trailers",
+    "Upgrade-Insecure-Requests": "1"
+  }
+}
